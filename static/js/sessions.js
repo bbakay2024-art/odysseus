@@ -17,6 +17,8 @@ let _sessionNavToken = 0;
 let _skipAutoSelect = false;
 let _suppressNextSessionLoading = false;
 let _rootFreshChatApplied = false;
+let _sessionsLoaded = false;
+let _sessionRefreshPending = false;
 const HISTORY_DISPLAY_CHAR_LIMIT = 160000;
 const HISTORY_DISPLAY_TAIL_CHARS = 20000;
 const HISTORY_PAGE_LIMIT_MOBILE = 8;
@@ -1666,13 +1668,13 @@ function _animateSessionRowsRemoving(ids, selector) {
   return new Promise(resolve => setTimeout(resolve, 520));
 }
 
-export async function loadSessions() {
+export async function loadSessions({ listOnly = false } = {}) {
   try {
     // Delete incognito sessions left over from a previous page load
-    await _cleanupIncognitoSessions();
+    if (!listOnly) await _cleanupIncognitoSessions();
 
     // Use prefetched data from login page if available (first load only)
-    const prefetched = sessionStorage.getItem('ody-prefetch-sessions');
+    const prefetched = !listOnly && sessionStorage.getItem('ody-prefetch-sessions');
     let fetched;
     if (prefetched) {
       sessionStorage.removeItem('ody-prefetch-sessions');
@@ -1707,6 +1709,11 @@ export async function loadSessions() {
     } else {
       sessionsSection.classList.remove('hidden');
     }
+
+    _sessionsLoaded = true;
+    // Background refresh must not select a chat, clear a draft, create a
+    // default session, or touch this window's running conversation.
+    if (listOnly) return true;
 
     const activeSessions = sessions.filter(s => !s.archived);
     // "Transient" sessions = the singleton Assistant chat + any task-output
@@ -1825,12 +1832,28 @@ export async function loadSessions() {
     console.error('Error in loadSessions:', error);
     // app.js's global fetch wrapper owns expired-auth navigation. Avoid
     // flashing a redundant session error while that 401 redirect is pending.
-    if (error?.status !== 401) {
+    if (!listOnly && error?.status !== 401) {
       uiModule.showError('Failed to load sessions: ' + error.message);
     }
     return false;
   }
 }
+
+function refreshSessionsOnReturn() {
+  if (!_sessionsLoaded || document.hidden || _sessionRefreshPending) return;
+  _sessionRefreshPending = true;
+  // Coalesce the focus + visibility events fired when returning to an app.
+  setTimeout(async () => {
+    try {
+      if (!document.hidden) await loadSessions({ listOnly: true });
+    } finally {
+      _sessionRefreshPending = false;
+    }
+  }, 150);
+}
+
+window.addEventListener('focus', refreshSessionsOnReturn);
+document.addEventListener('visibilitychange', refreshSessionsOnReturn);
 
 export async function selectSession(id, { keepSidebar = false, showLoading = true, immediateLoading = false } = {}) {
   // Exit compare mode cleanly if active

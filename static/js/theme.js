@@ -400,6 +400,8 @@ export function applyUiScale(scale) {
   // older stored value can't leave a stale zoom applied.
   document.documentElement.classList.remove('ui-scale-110', 'ui-scale-125', 'ui-scale-140');
   if (s === '125') document.documentElement.classList.add('ui-scale-125');
+  const select = document.getElementById('theme-text-size-select');
+  if (select) select.value = s;
 }
 
 const _BG_CLASSES = ['bg-pattern-dots',
@@ -465,6 +467,50 @@ export function getSaved() {
   if (obj && obj.name === 'sakura') obj.name = 'ume';
   return obj;
 }
+
+// A Chrome app window shares storage with browser tabs, but each window must
+// apply changes to its own DOM. Never save here: that would echo the update.
+export function syncAppearanceFromStorage() {
+  const saved = getSaved() || { name: DEFAULT_THEME, colors: THEMES[DEFAULT_THEME] };
+  if (!saved.colors || typeof saved.colors !== 'object') return;
+  applyColors(saved.colors);
+  applyFontDensity(saved.font, saved.density);
+  applyBgEffectColor(saved.bgEffectColor || THEME_DEFAULT_EFFECT_COLOR[saved.name] || '');
+  applyBgEffectIntensity(saved.bgEffectIntensity ?? THEME_DEFAULT_INTENSITY[saved.name] ?? 1);
+  applyBgEffectSize(saved.bgEffectSize ?? 1);
+  applyFrostedGlass(saved.frosted ?? THEME_DEFAULT_FROSTED[saved.name] ?? false);
+  applyBgPattern(saved.bgPattern || THEME_DEFAULT_PATTERN[saved.name] || 'none');
+  applyUiScale(Storage.get(UI_SCALE_KEY));
+  // Keep the editor in step too, so the next edit cannot save stale controls.
+  for (const key of ['bg', 'fg', 'panel', 'border', 'red']) {
+    const picker = document.getElementById('clr-' + key);
+    if (picker) picker.value = saved.colors[key];
+  }
+  syncAdvancedPickers(saved.colors);
+  const values = {
+    'theme-font-select': saved.font || DEFAULT_FONT,
+    'theme-density-select': saved.density || DEFAULT_DENSITY,
+    'theme-bg-pattern-select': saved.bgPattern || THEME_DEFAULT_PATTERN[saved.name] || 'none',
+    'theme-bg-effect-color': saved.bgEffectColor || THEME_DEFAULT_EFFECT_COLOR[saved.name] || saved.colors.fg,
+    'theme-bg-intensity': Math.round((saved.bgEffectIntensity ?? THEME_DEFAULT_INTENSITY[saved.name] ?? 1) * 100),
+    'theme-bg-size': Math.round((saved.bgEffectSize ?? 1) * 100),
+  };
+  for (const [id, value] of Object.entries(values)) {
+    const control = document.getElementById(id);
+    if (control) control.value = String(value);
+  }
+  const frosted = document.getElementById('theme-frosted-toggle');
+  if (frosted) frosted.checked = saved.frosted ?? THEME_DEFAULT_FROSTED[saved.name] ?? false;
+  document.querySelectorAll('.theme-swatch').forEach(swatch => {
+    swatch.classList.toggle('active', swatch.dataset.theme === saved.name);
+  });
+}
+
+window.addEventListener('storage', (event) => {
+  if (event.storageArea !== localStorage) return;
+  if (event.key === LS_KEY || event.key === null) syncAppearanceFromStorage();
+  else if (event.key === UI_SCALE_KEY) applyUiScale(Storage.get(UI_SCALE_KEY));
+});
 
 export function save(name, colors, opts) {
   const obj = { name, colors };

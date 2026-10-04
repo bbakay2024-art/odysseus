@@ -247,6 +247,10 @@ globalThis.fetch = async () => {
   return response;
 };
 
+const windowListeners = {};
+const documentListeners = {};
+window.addEventListener = (type, listener) => { (windowListeners[type] ||= []).push(listener); };
+document.addEventListener = (type, listener) => { (documentListeners[type] ||= []).push(listener); };
 const sessions = await import(SESSIONS_URL + '?bootstrap');
 const shell = await import(SHELL_URL + '?bootstrap');
 
@@ -276,7 +280,7 @@ globalThis.fetch = async () => {
 };
 const authResult = await sessions.loadSessions();
 
-console.log(JSON.stringify({
+const result = {
   seeded,
   hydrated,
   beforePaint,
@@ -295,7 +299,46 @@ console.log(JSON.stringify({
   authResult,
   authRedirect: window.location.href,
   authAddedError: __sessionErrors.length !== errorsBeforeAuth,
-}));
+};
+
+// Returning to an installed app refreshes the list without navigating away
+// from its chat or consuming stale login-prefetch data.
+sessions.setCurrentSessionId('existing');
+sessionStorage.setItem('ody-prefetch-sessions', JSON.stringify([{ id: 'stale' }]));
+let refreshFetches = 0;
+globalThis.fetch = async (url, options) => {
+  refreshFetches += 1;
+  if (options?.method && options.method !== 'GET') throw new Error('unexpected write');
+  return { ok: true, json: async () => [{ id: 'new', name: 'Created in another window' }] };
+};
+for (const listener of windowListeners.focus || []) listener();
+for (const listener of documentListeners.visibilitychange || []) listener();
+world.runTimers();
+await new Promise(resolve => setImmediate(resolve));
+result.refresh = {
+  fetches: refreshFetches,
+  ids: sessions.getSessions().map(session => session.id),
+  current: sessions.getCurrentSessionId(),
+  draft: message.value,
+  pending: sessions.hasPendingChat(),
+  historyWrites: world.historyWrites(),
+};
+
+globalThis.fetch = async () => {
+  refreshFetches += 1;
+  return { ok: false, status: 503, json: async () => ({}) };
+};
+const errorsBeforeRefresh = __sessionErrors.length;
+result.failedRefresh = await sessions.loadSessions({ listOnly: true });
+result.idsAfterFailure = sessions.getSessions().map(session => session.id);
+result.refreshAddedError = __sessionErrors.length !== errorsBeforeRefresh;
+
+document.hidden = true;
+for (const listener of windowListeners.focus || []) listener();
+world.runTimers();
+await new Promise(resolve => setImmediate(resolve));
+result.hiddenFetches = refreshFetches;
+console.log(JSON.stringify(result));
 """
 
 
@@ -354,3 +397,21 @@ def test_401_keeps_global_auth_redirect_contract(results):
     assert results["authRedirect"] == "/login"
     assert results["authAddedError"] is False
     assert results["sessionIds"] == ["existing"]
+
+
+def test_returning_window_refreshes_list_without_changing_conversation(results):
+    assert results["refresh"] == {
+        "fetches": 1,
+        "ids": ["new"],
+        "current": "existing",
+        "draft": "draft must survive",
+        "pending": False,
+        "historyWrites": 0,
+    }
+    assert results["hiddenFetches"] == 2
+
+
+def test_background_refresh_failure_preserves_list_without_popup(results):
+    assert results["failedRefresh"] is False
+    assert results["idsAfterFailure"] == ["new"]
+    assert results["refreshAddedError"] is False
